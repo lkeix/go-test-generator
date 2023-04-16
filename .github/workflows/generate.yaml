@@ -23,4 +23,4 @@ jobs:
         run: |
           go build -o g cmd/go-test-genarator/main.go
           ./g
-          ls
+          cat ./generator_test.go
