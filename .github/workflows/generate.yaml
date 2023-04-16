@@ -1,0 +1,26 @@
+# write golang workflow
+name: generate golang unit tests
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  calculate:
+    runs-on: ubuntu-20.04
+
+    steps:
+      - name: setup
+        uses: actions/setup-go@v3
+        with:
+          go-version: 1.18
+
+      - name: checkout
+        uses: actions/checkout@v3
+
+      - name: generate
+        run: |
+          go build -o g cmd/go-test-genarator/main.go
+          ./g
+          cat generate_test.go
