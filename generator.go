@@ -67,8 +67,10 @@ func (g *Generator) Generate() {
 			if err != nil {
 				log.Fatal(err)
 			}
-			// write
-			format.Node(file, token.NewFileSet(), f)
+			err = format.Node(file, token.NewFileSet(), f)
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
 	}
 }
@@ -107,6 +109,12 @@ func BuildTestCase(packageName string, funcs map[string]int64) *ast.File {
 			&ast.GenDecl{
 				Tok: token.IMPORT,
 				Specs: []ast.Spec{
+					&ast.ImportSpec{
+						Path: &ast.BasicLit{
+							Kind:  token.STRING,
+							Value: strconv.Quote("fmt"),
+						},
+					},
 					&ast.ImportSpec{
 						Path: &ast.BasicLit{
 							Kind:  token.STRING,
@@ -215,26 +223,13 @@ func buildTestcase(num int64) *ast.BlockStmt {
 			&ast.RangeStmt{
 				Key: &ast.Ident{
 					Name: "_",
-					Obj: &ast.Object{
-						Kind: ast.Var,
-						Name: "_",
-						Decl: &ast.AssignStmt{
-							Lhs: []ast.Expr{
-								&ast.Ident{
-									Name: "_",
-								},
-								&ast.Ident{
-									Name: "testcase",
-								},
-							},
-							Tok: token.DEFINE,
-							Rhs: []ast.Expr{
-								&ast.Ident{
-									Name: "testcases",
-								},
-							},
-						},
-					},
+				},
+				Value: &ast.Ident{
+					Name: "testcase",
+				},
+				Tok: token.DEFINE,
+				X: &ast.Ident{
+					Name: "testcases",
 				},
 				Body: &ast.BlockStmt{
 					List: []ast.Stmt{
@@ -271,6 +266,28 @@ func buildTestcase(num int64) *ast.BlockStmt {
 															X: &ast.SelectorExpr{
 																X:   &ast.Ident{Name: "testing"},
 																Sel: &ast.Ident{Name: "T"},
+															},
+														},
+													},
+												},
+											},
+										},
+										Body: &ast.BlockStmt{
+											List: []ast.Stmt{
+												&ast.ExprStmt{
+													X: &ast.CallExpr{
+														Fun: &ast.SelectorExpr{
+															X: &ast.Ident{
+																Name: "fmt",
+															},
+															Sel: &ast.Ident{
+																Name: "Println",
+															},
+														},
+														Args: []ast.Expr{
+															&ast.BasicLit{
+																Kind:  token.STRING,
+																Value: "\"write your unit test!\"",
 															},
 														},
 													},
