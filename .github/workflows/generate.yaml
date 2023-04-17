@@ -21,6 +21,6 @@ jobs:
 
       - name: generate
         run: |
-          go install github.com/lkeix/go-test-generator/cmd/go-test-generator
+          go install github.com/lkeix/go-test-generator/cmd/go-test-generator@latest 
           go-test-generator
           cat ./generator_test.go
