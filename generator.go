@@ -5,7 +5,6 @@ import (
 	"go/ast"
 	"go/format"
 	"go/token"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,71 +15,81 @@ import (
 )
 
 type Generator struct {
-	funcs map[string]map[string]int64
+	enableGoMock bool
+	astLoader    *estimatenecessarytests.ASTLoader
 }
 
-func NewGenerator(path string) (*Generator, error) {
+func NewGenerator(path string, enableGoMock bool) (*Generator, error) {
 	astLoader := estimatenecessarytests.NewASTLoader(path, false)
 	err := astLoader.Load()
 	if err != nil {
 		return nil, err
 	}
 
-	funcs := make(map[string]map[string]int64)
-	for k, ast := range astLoader.Asts {
-		calculator := estimatenecessarytests.NewCalculator()
-		calculator.Calculate(ast)
-		funcs[k] = calculator.Result
-	}
 	return &Generator{
-		funcs: funcs,
+		astLoader:    astLoader,
+		enableGoMock: enableGoMock,
 	}, nil
 }
 
-func (g *Generator) Generate() {
-	// TODO: generate each funcs test code into Xxx_test.go
-	for path, funcs := range g.funcs {
+func (g *Generator) Generate() error {
+	funcsMap := make(map[string]map[string]int64)
+	fsets := make(map[string]*ast.File)
+	for k, ast := range g.astLoader.Asts {
+		calculator := estimatenecessarytests.NewCalculator()
+		calculator.Calculate(ast)
+		funcsMap[k] = calculator.Result
+		fsets[k] = ast
+	}
+
+	for path, funcs := range funcsMap {
 		dname := filepath.Dir(path)
 		bname := filepath.Base(path)
-		testFileName := buildTestFileName(bname)
+		testFileName := createTestFileName(bname)
 
 		output := fmt.Sprintf("%s/%s", dname, testFileName)
-		pairs := make(map[string]int64)
 		var packageName string
+
+		outputDecls := make([]ast.Decl, 0)
 		for fInfo, f := range funcs {
 			split := strings.Split(fInfo, ".")
-			pName, funcName, isPublic := buildTestCaseFuncName(split)
-			if isPublic {
-				pairs[funcName] = f
-			}
+			pName, funcName, isPublic := createTestCaseFuncName(split)
 			packageName = pName
-		}
 
-		f := BuildTestCase(packageName, pairs)
+			if isPublic {
+				fmt.Println(fsets[path].Comments)
+				decl := g.BuildTestCase(fsets[path], funcName, int(f))
+				outputDecls = append(outputDecls, decl)
+			}
+		}
 
 		if packageName == "" {
 			continue
 		}
 
+		outputASTFile := newTestCodeASTFile(packageName)
+		outputASTFile.Decls = append(outputASTFile.Decls, outputDecls...)
 		if _, err := os.Stat(output); os.IsNotExist(err) {
 			file, err := os.Create(output)
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
-			err = format.Node(file, token.NewFileSet(), f)
+			err = format.Node(file, token.NewFileSet(), outputASTFile)
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 		}
 	}
+
+	return nil
 }
 
-func buildTestFileName(name string) string {
+func createTestFileName(name string) string {
 	split := strings.Split(name, ".")
 	return split[0] + "_test." + split[1]
 }
 
-func buildTestCaseFuncName(split []string) (string, string, bool) {
+func createTestCaseFuncName(split []string) (string, string, bool) {
 	var packageName, structName, funcName string
 	packageName = split[0]
 	if len(split) == 2 {
@@ -95,14 +104,17 @@ func buildTestCaseFuncName(split []string) (string, string, bool) {
 	var builder strings.Builder
 	builder.Write([]byte("Test"))
 	if unicode.IsUpper(rune(funcName[0])) {
-		builder.Write([]byte(structName))
+		if structName != "" {
+			builder.Write([]byte(structName))
+			builder.Write([]byte("_"))
+		}
 		builder.Write([]byte(funcName))
 		return fmt.Sprintf("%s_test", packageName), builder.String(), true
 	}
 	return "", "", false
 }
 
-func BuildTestCase(packageName string, funcs map[string]int64) *ast.File {
+func newTestCodeASTFile(packageName string) *ast.File {
 	f := &ast.File{
 		Name: ast.NewIdent(packageName),
 		Decls: []ast.Decl{
@@ -125,46 +137,38 @@ func BuildTestCase(packageName string, funcs map[string]int64) *ast.File {
 			},
 		},
 	}
-
-	decls := buildTestFuncDecls(funcs)
-	f.Decls = append(f.Decls, decls...)
-
 	return f
 }
 
-func buildTestFuncDecls(funcs map[string]int64) []ast.Decl {
-	decls := []ast.Decl{}
-	for testFuncName, needTestCases := range funcs {
-		decls = append(decls, &ast.FuncDecl{
-			Name: ast.NewIdent(testFuncName),
-			Type: &ast.FuncType{
-				Params: &ast.FieldList{
-					List: []*ast.Field{
-						{
-							Names: []*ast.Ident{
-								{
-									Name: "t",
-								},
+func (g *Generator) BuildTestCase(f *ast.File, testFuncName string, needsTestCasesNumber int) ast.Decl {
+	decl := &ast.FuncDecl{
+		Name: ast.NewIdent(testFuncName),
+		Type: &ast.FuncType{
+			Params: &ast.FieldList{
+				List: []*ast.Field{
+					{
+						Names: []*ast.Ident{
+							{
+								Name: "t",
 							},
-							Type: &ast.StarExpr{
-								X: &ast.SelectorExpr{
-									X:   &ast.Ident{Name: "testing"},
-									Sel: &ast.Ident{Name: "T"},
-								},
+						},
+						Type: &ast.StarExpr{
+							X: &ast.SelectorExpr{
+								X:   &ast.Ident{Name: "testing"},
+								Sel: &ast.Ident{Name: "T"},
 							},
 						},
 					},
 				},
 			},
-			Body: buildTestcase(needTestCases),
-		})
+		},
+		Body: g.buildSkeltonTestCode(f, needsTestCasesNumber),
 	}
-
-	return decls
+	return decl
 }
 
-func buildTestcase(num int64) *ast.BlockStmt {
-	buildTestcaseStruct := func(num int64) []ast.Expr {
+func (g *Generator) buildSkeltonTestCode(f *ast.File, num int) *ast.BlockStmt {
+	buildTestcaseStruct := func(num int) []ast.Expr {
 		var exprs []ast.Expr
 		compositLit := &ast.CompositeLit{
 			Elts: []ast.Expr{
@@ -185,6 +189,10 @@ func buildTestcase(num int64) *ast.BlockStmt {
 		}
 
 		return exprs
+	}
+
+	for _, comment := range f.Comments {
+		fmt.Println(comment.List[0].Text)
 	}
 
 	return &ast.BlockStmt{
@@ -220,76 +228,80 @@ func buildTestcase(num int64) *ast.BlockStmt {
 					},
 				},
 			},
-			&ast.RangeStmt{
-				Key: &ast.Ident{
-					Name: "_",
-				},
-				Value: &ast.Ident{
-					Name: "testcase",
-				},
-				Tok: token.DEFINE,
-				X: &ast.Ident{
-					Name: "testcases",
-				},
-				Body: &ast.BlockStmt{
-					List: []ast.Stmt{
-						&ast.ExprStmt{
-							X: &ast.CallExpr{
-								Fun: &ast.SelectorExpr{
-									X: &ast.Ident{
-										Name: "t",
-									},
-									Sel: &ast.Ident{
-										Name: "Run",
-									},
+			buildRunTestForStmt(),
+		},
+	}
+}
+
+func buildRunTestForStmt() *ast.RangeStmt {
+	return &ast.RangeStmt{
+		Key: &ast.Ident{
+			Name: "_",
+		},
+		Value: &ast.Ident{
+			Name: "testcase",
+		},
+		Tok: token.DEFINE,
+		X: &ast.Ident{
+			Name: "testcases",
+		},
+		Body: &ast.BlockStmt{
+			List: []ast.Stmt{
+				&ast.ExprStmt{
+					X: &ast.CallExpr{
+						Fun: &ast.SelectorExpr{
+							X: &ast.Ident{
+								Name: "t",
+							},
+							Sel: &ast.Ident{
+								Name: "Run",
+							},
+						},
+						Args: []ast.Expr{
+							&ast.SelectorExpr{
+								X: &ast.Ident{
+									Name: "testcase",
 								},
-								Args: []ast.Expr{
-									&ast.SelectorExpr{
-										X: &ast.Ident{
-											Name: "testcase",
-										},
-										Sel: &ast.Ident{
-											Name: "name",
-										},
-									},
-									&ast.FuncLit{
-										Type: &ast.FuncType{
-											Params: &ast.FieldList{
-												List: []*ast.Field{
+								Sel: &ast.Ident{
+									Name: "name",
+								},
+							},
+							&ast.FuncLit{
+								Type: &ast.FuncType{
+									Params: &ast.FieldList{
+										List: []*ast.Field{
+											{
+												Names: []*ast.Ident{
 													{
-														Names: []*ast.Ident{
-															{
-																Name: "t",
-															},
-														},
-														Type: &ast.StarExpr{
-															X: &ast.SelectorExpr{
-																X:   &ast.Ident{Name: "testing"},
-																Sel: &ast.Ident{Name: "T"},
-															},
-														},
+														Name: "t",
+													},
+												},
+												Type: &ast.StarExpr{
+													X: &ast.SelectorExpr{
+														X:   &ast.Ident{Name: "testing"},
+														Sel: &ast.Ident{Name: "T"},
 													},
 												},
 											},
 										},
-										Body: &ast.BlockStmt{
-											List: []ast.Stmt{
-												&ast.ExprStmt{
-													X: &ast.CallExpr{
-														Fun: &ast.SelectorExpr{
-															X: &ast.Ident{
-																Name: "fmt",
-															},
-															Sel: &ast.Ident{
-																Name: "Println",
-															},
-														},
-														Args: []ast.Expr{
-															&ast.BasicLit{
-																Kind:  token.STRING,
-																Value: "\"write your unit test!\"",
-															},
-														},
+									},
+								},
+								Body: &ast.BlockStmt{
+									List: []ast.Stmt{
+										&ast.ExprStmt{
+											X: &ast.CallExpr{
+												Fun: &ast.SelectorExpr{
+													X: &ast.Ident{
+														Name: "fmt",
+													},
+													Sel: &ast.Ident{
+														Name: "Println",
+													},
+												},
+												Args: []ast.Expr{
+													&ast.BasicLit{
+														Kind:  token.STRING,
+														Value: "\"write your unit test!\"",
 													},
 												},
 											},

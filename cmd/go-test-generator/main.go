@@ -3,14 +3,12 @@ package main
 import (
 	"log"
 
-	testgenerator "github.com/lkeix/go-test-generator"
+	"github.com/lkeix/go-test-generator/cli"
 )
 
 func main() {
-	g, err := testgenerator.NewGenerator(".")
-	if err != nil {
+	c := cli.NewCLI()
+	if err := c.Execute(); err != nil {
 		log.Fatal(err)
 	}
-
-	g.Generate()
 }
