@@ -1,9 +1,11 @@
+//go:generate mockgen -source=$GOFILE -package=usecase -destination=../test/mock/usecase/admin.go
 package gotestgenerator
 
 import (
 	"fmt"
 	"go/ast"
 	"go/format"
+	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -12,16 +14,23 @@ import (
 	"unicode"
 
 	estimatenecessarytests "github.com/lkeix/estimate-necessary-tests"
+	"github.com/lkeix/go-test-generator/gomock"
 )
 
 type Generator struct {
 	enableGoMock bool
 	astLoader    *estimatenecessarytests.ASTLoader
+	gm           gomock.Gomock
 }
 
 func NewGenerator(path string, enableGoMock bool) (*Generator, error) {
 	astLoader := estimatenecessarytests.NewASTLoader(path, false)
-	err := astLoader.Load()
+	err := astLoader.Load(parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
+
+	gm, err := gomock.NewGomock(path, astLoader.Asts)
 	if err != nil {
 		return nil, err
 	}
@@ -29,6 +38,7 @@ func NewGenerator(path string, enableGoMock bool) (*Generator, error) {
 	return &Generator{
 		astLoader:    astLoader,
 		enableGoMock: enableGoMock,
+		gm:           gm,
 	}, nil
 }
 
@@ -48,27 +58,37 @@ func (g *Generator) Generate() error {
 		testFileName := createTestFileName(bname)
 
 		output := fmt.Sprintf("%s/%s", dname, testFileName)
-		var packageName string
+		var testPackageName string
 
 		outputDecls := make([]ast.Decl, 0)
 		for fInfo, f := range funcs {
 			split := strings.Split(fInfo, ".")
-			pName, funcName, isPublic := createTestCaseFuncName(split)
-			packageName = pName
 
-			if isPublic {
-				fmt.Println(fsets[path].Comments)
-				decl := g.BuildTestCase(fsets[path], funcName, int(f))
+			funcName := extractTestTargetFuncName(split)
+			isExported := IsExportedFunc(funcName)
+			testPackageName = createTestPackageName(split)
+			testFuncName := createTestCaseFuncName(split)
+
+			if isExported {
+				abs, err := filepath.Abs(path)
+				if err != nil {
+					return err
+				}
+				decl := g.BuildTestCase(fsets[path], abs, funcName, testFuncName, int(f))
 				outputDecls = append(outputDecls, decl)
 			}
 		}
 
-		if packageName == "" {
+		if testPackageName == "" {
 			continue
 		}
 
-		outputASTFile := newTestCodeASTFile(packageName)
+		outputASTFile := newTestCodeASTFile(testPackageName)
 		outputASTFile.Decls = append(outputASTFile.Decls, outputDecls...)
+		if len(outputDecls) == 0 {
+			continue
+		}
+
 		if _, err := os.Stat(output); os.IsNotExist(err) {
 			file, err := os.Create(output)
 			if err != nil {
@@ -89,9 +109,32 @@ func createTestFileName(name string) string {
 	return split[0] + "_test." + split[1]
 }
 
-func createTestCaseFuncName(split []string) (string, string, bool) {
-	var packageName, structName, funcName string
-	packageName = split[0]
+func createTestPackageName(split []string) string {
+	packageName := split[0]
+	return fmt.Sprintf("%s_test", packageName)
+}
+
+func extractTestTargetFuncName(split []string) string {
+	if len(split) == 2 {
+		return split[1]
+	}
+
+	if len(split) == 3 {
+		return split[2]
+	}
+
+	return ""
+}
+
+func IsExportedFunc(funcName string) bool {
+	if len(funcName) == 0 {
+		return false
+	}
+	return unicode.IsUpper(rune(funcName[0]))
+}
+
+func createTestCaseFuncName(split []string) string {
+	var structName, funcName string
 	if len(split) == 2 {
 		funcName = split[1]
 	}
@@ -103,15 +146,13 @@ func createTestCaseFuncName(split []string) (string, string, bool) {
 
 	var builder strings.Builder
 	builder.Write([]byte("Test"))
-	if unicode.IsUpper(rune(funcName[0])) {
-		if structName != "" {
-			builder.Write([]byte(structName))
-			builder.Write([]byte("_"))
-		}
-		builder.Write([]byte(funcName))
-		return fmt.Sprintf("%s_test", packageName), builder.String(), true
+	if structName != "" {
+		builder.Write([]byte(structName))
+		builder.Write([]byte("_"))
 	}
-	return "", "", false
+
+	builder.Write([]byte(funcName))
+	return builder.String()
 }
 
 func newTestCodeASTFile(packageName string) *ast.File {
@@ -140,7 +181,7 @@ func newTestCodeASTFile(packageName string) *ast.File {
 	return f
 }
 
-func (g *Generator) BuildTestCase(f *ast.File, testFuncName string, needsTestCasesNumber int) ast.Decl {
+func (g *Generator) BuildTestCase(f *ast.File, testTargetFilePath, testTargetFuncName, testFuncName string, needsTestCasesNumber int) ast.Decl {
 	decl := &ast.FuncDecl{
 		Name: ast.NewIdent(testFuncName),
 		Type: &ast.FuncType{
@@ -162,12 +203,14 @@ func (g *Generator) BuildTestCase(f *ast.File, testFuncName string, needsTestCas
 				},
 			},
 		},
-		Body: g.buildSkeltonTestCode(f, needsTestCasesNumber),
+		Body: g.buildSkeltonTestCode(f, testTargetFilePath, testTargetFuncName, needsTestCasesNumber),
 	}
 	return decl
 }
 
-func (g *Generator) buildSkeltonTestCode(f *ast.File, num int) *ast.BlockStmt {
+func (g *Generator) buildSkeltonTestCode(f *ast.File, testTargetFilePath, testTargetFuncName string, num int) *ast.BlockStmt {
+	g.gm.ExtractDepsInterface(testTargetFilePath, testTargetFuncName)
+
 	buildTestcaseStruct := func(num int) []ast.Expr {
 		var exprs []ast.Expr
 		compositLit := &ast.CompositeLit{
@@ -189,10 +232,6 @@ func (g *Generator) buildSkeltonTestCode(f *ast.File, num int) *ast.BlockStmt {
 		}
 
 		return exprs
-	}
-
-	for _, comment := range f.Comments {
-		fmt.Println(comment.List[0].Text)
 	}
 
 	return &ast.BlockStmt{
