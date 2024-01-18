@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestNewGomock(t *testing.T) {
+func TestDstPath(t *testing.T) {
 	testcases := []struct {
 		name string
 	}{{name: ""}}
@@ -25,7 +25,7 @@ func TestNewGomockCommnet(t *testing.T) {
 		})
 	}
 }
-func TestDstPath(t *testing.T) {
+func Testgomock_ExtractDepsInterface(t *testing.T) {
 	testcases := []struct {
 		name string
 	}{{name: ""}}
@@ -35,10 +35,10 @@ func TestDstPath(t *testing.T) {
 		})
 	}
 }
-func Testgomock_ExtractDepsInterface(t *testing.T) {
+func TestNewGomock(t *testing.T) {
 	testcases := []struct {
 		name string
-	}{{name: ""}}
+	}{{name: ""}, {name: ""}}
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {
 			fmt.Println("write your unit test!")

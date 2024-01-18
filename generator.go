@@ -209,7 +209,10 @@ func (g *Generator) BuildTestCase(f *ast.File, testTargetFilePath, testTargetFun
 }
 
 func (g *Generator) buildSkeltonTestCode(f *ast.File, testTargetFilePath, testTargetFuncName string, num int) *ast.BlockStmt {
-	g.gm.ExtractDepsInterface(testTargetFilePath, testTargetFuncName)
+	interfaceFunc := g.gm.ExtractDepsInterface(testTargetFilePath, testTargetFuncName)
+	for callExpr := range interfaceFunc {
+		fmt.Println(callExpr)
+	}
 
 	buildTestcaseStruct := func(num int) []ast.Expr {
 		var exprs []ast.Expr
