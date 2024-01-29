@@ -3,7 +3,10 @@ package gomock
 import (
 	"fmt"
 	"go/ast"
+	"go/parser"
+	"go/token"
 	"go/types"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -18,12 +21,34 @@ func NewGomockCommnet(comment string) GomockComment {
 
 const dstOptionString = "-destination="
 
+func (g GomockComment) HasMockComment() bool {
+	return g != ""
+}
+
 func (g GomockComment) DstPath() string {
 	splits := strings.Split(string(g), " ")
 
 	for _, s := range splits {
 		if strings.HasPrefix(s, dstOptionString) {
-			return strings.ReplaceAll(s, dstOptionString, "")
+			relPath := strings.ReplaceAll(s, dstOptionString, "")
+			absPath, _ := filepath.Abs(relPath)
+			return absPath
+		}
+	}
+
+	return ""
+}
+
+const srcOptionString = "-source="
+
+func (g GomockComment) SrcPath() string {
+	splits := strings.Split(string(g), " ")
+
+	for _, s := range splits {
+		if strings.HasPrefix(s, srcOptionString) {
+			relPath := strings.ReplaceAll(s, srcOptionString, "")
+			absPath, _ := filepath.Abs(relPath)
+			return absPath
 		}
 	}
 
@@ -32,6 +57,10 @@ func (g GomockComment) DstPath() string {
 
 type Gomock interface {
 	ExtractDepsInterface(filePath, funcName string) map[*ast.CallExpr]struct{}
+	BuildMockSkelton(callExpr *ast.CallExpr) []ast.Expr
+	ExtractGoMockComment(filepath string) (GomockComment, error)
+	ExtractMockPkgPath(path string) map[string]*packages.Package
+	IsImportedMockPkg(filePath string, mockPkg string) bool
 }
 
 type FilePath string
@@ -39,9 +68,50 @@ type FilePath string
 type FuncName string
 
 type gomock struct {
-	pkgs      []*packages.Package
-	funcDecls map[FilePath]map[FuncName]*ast.FuncDecl
-	asts      map[string]*ast.File
+	InterfaceImportMap map[string]string
+	pkgs               []*packages.Package
+	funcDecls          map[FilePath]map[FuncName]*ast.FuncDecl
+	asts               map[string]*ast.File
+}
+
+func (g *gomock) ExtractGoMockComment(filepath string) (GomockComment, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filepath, nil, parser.ParseComments)
+	if err != nil {
+		return "", err
+	}
+	if len(f.Comments) > 0 {
+		return GomockComment(f.Comments[0].Text()), nil
+	}
+
+	return "", nil
+}
+
+func (g *gomock) BuildInterfaceImportMap(filePath string) {
+
+}
+
+func (g *gomock) IsImportedMockPkg(filePath string, mockPkg string) bool {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
+	if err != nil {
+		return false
+	}
+
+	for _, im := range f.Imports {
+		if im.Name == nil {
+			continue
+		}
+		if im.Name.Name == mockPkg {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (g *gomock) BuildMockSkelton(callExpr *ast.CallExpr) []ast.Expr {
+	return nil
 }
 
 func (g *gomock) ExtractDepsInterface(filePath, funcName string) map[*ast.CallExpr]struct{} {
@@ -57,11 +127,24 @@ func (g *gomock) ExtractDepsInterface(filePath, funcName string) map[*ast.CallEx
 	return unique
 }
 
+func (g *gomock) ExtractMockPkgPath(path string) map[string]*packages.Package {
+	for _, pkg := range g.pkgs {
+		if slices.Contains(pkg.GoFiles, path) {
+			return pkg.Imports
+		}
+	}
+
+	return nil
+}
+
 func (g *gomock) extractInterfaceFunc(pkg *packages.Package, asts []*ast.File, funcName string) *ast.CallExpr {
 	for _, a := range asts {
 		for _, decl := range a.Decls {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
+				if d.Name.Name != funcName {
+					continue
+				}
 				callExpr := g.extractCallExprInInterface(pkg, d.Body)
 				if callExpr == nil {
 					continue
@@ -91,6 +174,7 @@ func (g *gomock) extractCallExprInInterface(pkg *packages.Package, bs *ast.Block
 					}
 
 					if _, ok := recv.Type().Underlying().(*types.Interface); ok {
+						fmt.Println(recv.Pkg().Name())
 						return callExpr
 					}
 				}
@@ -109,7 +193,29 @@ func (g *gomock) extractCallExprInInterface(pkg *packages.Package, bs *ast.Block
 				}
 
 				if _, ok := recv.Type().Underlying().(*types.Interface); ok {
+					fmt.Println(recv.Pkg().Name())
 					return callExpr
+				}
+			}
+		case *ast.IfStmt:
+			if assignStmt, ok := s.Init.(*ast.AssignStmt); ok {
+				for _, expr := range assignStmt.Rhs {
+					if callExpr, ok := expr.(*ast.CallExpr); ok {
+						funcObj := extractReference(pkg, callExpr)
+						if funcObj == nil {
+							continue
+						}
+
+						recv := extractReciver(funcObj)
+						if recv == nil {
+							continue
+						}
+
+						if _, ok := recv.Type().Underlying().(*types.Interface); ok {
+							fmt.Println(recv.Pkg().Name())
+							return callExpr
+						}
+					}
 				}
 			}
 		}
@@ -130,7 +236,7 @@ func extractReference(pkg *packages.Package, callExpr *ast.CallExpr) types.Objec
 func extractReciver(funcObj types.Object) *types.Var {
 	if sig, ok := funcObj.Type().(*types.Signature); ok {
 		if recv := sig.Recv(); recv != nil {
-				return recv
+			return recv
 		}
 	}
 	return nil
@@ -153,8 +259,8 @@ func NewGomock(rootDir string, asts map[string]*ast.File) (Gomock, error) {
 			packages.NeedSyntax |
 			packages.NeedTypesInfo |
 			packages.NeedDeps,
-		Dir: rootDir,
 	}
+
 	pkgs, err := packages.Load(cfg, fmt.Sprintf("%s/...", rootDir))
 	if err != nil {
 		return nil, err

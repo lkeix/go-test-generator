@@ -61,6 +61,10 @@ func (g *Generator) Generate() error {
 		var testPackageName string
 
 		outputDecls := make([]ast.Decl, 0)
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
 		for fInfo, f := range funcs {
 			split := strings.Split(fInfo, ".")
 
@@ -70,10 +74,6 @@ func (g *Generator) Generate() error {
 			testFuncName := createTestCaseFuncName(split)
 
 			if isExported {
-				abs, err := filepath.Abs(path)
-				if err != nil {
-					return err
-				}
 				decl := g.BuildTestCase(fsets[path], abs, funcName, testFuncName, int(f))
 				outputDecls = append(outputDecls, decl)
 			}
@@ -83,7 +83,11 @@ func (g *Generator) Generate() error {
 			continue
 		}
 
-		outputASTFile := newTestCodeASTFile(testPackageName)
+		var mockPkgPath string
+		pkg := g.gm.ExtractMockPkgPath(abs)
+		fmt.Println(pkg)
+
+		outputASTFile := g.newTestCodeASTFile(testPackageName, abs, mockPkgPath)
 		outputASTFile.Decls = append(outputASTFile.Decls, outputDecls...)
 		if len(outputDecls) == 0 {
 			continue
@@ -155,30 +159,40 @@ func createTestCaseFuncName(split []string) string {
 	return builder.String()
 }
 
-func newTestCodeASTFile(packageName string) *ast.File {
-	f := &ast.File{
-		Name: ast.NewIdent(packageName),
-		Decls: []ast.Decl{
-			&ast.GenDecl{
-				Tok: token.IMPORT,
-				Specs: []ast.Spec{
-					&ast.ImportSpec{
-						Path: &ast.BasicLit{
-							Kind:  token.STRING,
-							Value: strconv.Quote("fmt"),
-						},
-					},
-					&ast.ImportSpec{
-						Path: &ast.BasicLit{
-							Kind:  token.STRING,
-							Value: strconv.Quote("testing"),
-						},
-					},
+func (g *Generator) newTestCodeASTFile(packageName, targetFilePath, mockPath string) *ast.File {
+
+	gen := &ast.GenDecl{
+		Tok: token.IMPORT,
+		Specs: []ast.Spec{
+			&ast.ImportSpec{
+				Path: &ast.BasicLit{
+					Kind:  token.STRING,
+					Value: strconv.Quote("fmt"),
+				},
+			},
+			&ast.ImportSpec{
+				Path: &ast.BasicLit{
+					Kind:  token.STRING,
+					Value: strconv.Quote("testing"),
 				},
 			},
 		},
 	}
-	return f
+
+	if g.gm.IsImportedMockPkg(targetFilePath, mockPath) {
+		gen.Specs = append(gen.Specs, &ast.ImportSpec{
+			Name: ast.NewIdent("mock"),
+			Path: &ast.BasicLit{
+				Kind:  token.STRING,
+				Value: strconv.Quote(mockPath),
+			},
+		})
+	}
+
+	return &ast.File{
+		Name:  ast.NewIdent(packageName),
+		Decls: []ast.Decl{gen},
+	}
 }
 
 func (g *Generator) BuildTestCase(f *ast.File, testTargetFilePath, testTargetFuncName, testFuncName string, needsTestCasesNumber int) ast.Decl {
@@ -209,10 +223,12 @@ func (g *Generator) BuildTestCase(f *ast.File, testTargetFilePath, testTargetFun
 }
 
 func (g *Generator) buildSkeltonTestCode(f *ast.File, testTargetFilePath, testTargetFuncName string, num int) *ast.BlockStmt {
-	interfaceFunc := g.gm.ExtractDepsInterface(testTargetFilePath, testTargetFuncName)
-	for callExpr := range interfaceFunc {
-		fmt.Println(callExpr)
-	}
+	/*
+		interfaceFunc := g.gm.ExtractDepsInterface(testTargetFilePath, testTargetFuncName)
+		for callExpr := range interfaceFunc {
+			fmt.Println(callExpr)
+		}
+	*/
 
 	buildTestcaseStruct := func(num int) []ast.Expr {
 		var exprs []ast.Expr
