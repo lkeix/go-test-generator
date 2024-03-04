@@ -39,6 +39,94 @@ func (g GomockComment) DstPath() string {
 	return ""
 }
 
+func (g GomockComment) ExtractMockSrcPath() MockSrcPath {
+	lines := strings.Split(string(g), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Source: ") {
+			rel := strings.ReplaceAll(line, "Source: ", "")
+			absPath, _ := filepath.Abs(rel)
+			return MockSrcPath(absPath)
+		}
+	}
+	return ""
+}
+
+func (g GomockComment) ExtractGeneratedMockPath() GeneratedMockPath {
+	lines := strings.Split(string(g), "\n")
+	for _, line := range lines {
+		splits := strings.Split(line, " ")
+		for _, s := range splits {
+			if strings.HasPrefix(s, dstOptionString) {
+				relPath := strings.ReplaceAll(s, dstOptionString, "")
+				absPath, _ := filepath.Abs(relPath)
+				return GeneratedMockPath(absPath)
+			}
+		}
+	}
+	return ""
+}
+
+type MockSrcPath string
+
+type GeneratedMockPath string
+
+type MockInfo struct {
+	GeneratedMockPath   GeneratedMockPath
+	DeclearedInterfaces []*Interface
+}
+
+type Interface struct {
+	Name string
+	I    *ast.InterfaceType
+}
+
+type MockMap map[MockSrcPath]*MockInfo
+
+func NewMockMap() MockMap {
+	return make(MockMap)
+}
+
+func (m MockMap) IsReferedFrom(fset *ast.File, path string) bool {
+
+	return false
+}
+
+func ExtractDeclearedInterfaces(decls []ast.Decl) []*Interface {
+	is := make([]*Interface, 0)
+	for _, decl := range decls {
+		switch d := decl.(type) {
+		case *ast.GenDecl:
+			name, i := extractInterface(d.Specs)
+			if name == "" && i == nil {
+				continue
+			}
+			is = append(is, &Interface{
+				Name: name,
+				I:    i,
+			})
+		}
+	}
+	return is
+}
+
+func extractInterface(specs []ast.Spec) (string, *ast.InterfaceType) {
+	for _, spec := range specs {
+		typeSpec, ok := spec.(*ast.TypeSpec)
+		if !ok {
+			continue
+		}
+
+		interfaceType, ok := typeSpec.Type.(*ast.InterfaceType)
+		if !ok {
+			continue
+		}
+
+		return typeSpec.Name.Name, interfaceType
+	}
+
+	return "", nil
+}
+
 const srcOptionString = "-source="
 
 func (g GomockComment) SrcPath() string {
@@ -193,7 +281,6 @@ func (g *gomock) extractCallExprInInterface(pkg *packages.Package, bs *ast.Block
 				}
 
 				if _, ok := recv.Type().Underlying().(*types.Interface); ok {
-					fmt.Println(recv.Pkg().Name())
 					return callExpr
 				}
 			}
@@ -212,7 +299,6 @@ func (g *gomock) extractCallExprInInterface(pkg *packages.Package, bs *ast.Block
 						}
 
 						if _, ok := recv.Type().Underlying().(*types.Interface); ok {
-							fmt.Println(recv.Pkg().Name())
 							return callExpr
 						}
 					}

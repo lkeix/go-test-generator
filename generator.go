@@ -4,10 +4,8 @@ package gotestgenerator
 import (
 	"fmt"
 	"go/ast"
-	"go/format"
 	"go/parser"
 	"go/token"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -52,12 +50,8 @@ func (g *Generator) Generate() error {
 		fsets[k] = ast
 	}
 
+	mockMap := gomock.NewMockMap()
 	for path, funcs := range funcsMap {
-		dname := filepath.Dir(path)
-		bname := filepath.Base(path)
-		testFileName := createTestFileName(bname)
-
-		output := fmt.Sprintf("%s/%s", dname, testFileName)
 		var testPackageName string
 
 		outputDecls := make([]ast.Decl, 0)
@@ -83,26 +77,59 @@ func (g *Generator) Generate() error {
 			continue
 		}
 
-		var mockPkgPath string
-		pkg := g.gm.ExtractMockPkgPath(abs)
-		fmt.Println(pkg)
+		mockComment, err := g.gm.ExtractGoMockComment(abs)
+		if err != nil {
+			return err
+		}
 
-		outputASTFile := g.newTestCodeASTFile(testPackageName, abs, mockPkgPath)
-		outputASTFile.Decls = append(outputASTFile.Decls, outputDecls...)
-		if len(outputDecls) == 0 {
+		srcPath := mockComment.ExtractMockSrcPath()
+		mockFilePath := mockComment.ExtractGeneratedMockPath()
+
+		f := fsets[path]
+		d := gomock.ExtractDeclearedInterfaces(f.Decls)
+		if len(d) == 0 {
 			continue
 		}
 
-		if _, err := os.Stat(output); os.IsNotExist(err) {
-			file, err := os.Create(output)
-			if err != nil {
-				return err
-			}
-			err = format.Node(file, token.NewFileSet(), outputASTFile)
-			if err != nil {
-				return err
-			}
+		mf := &gomock.MockInfo{
+			GeneratedMockPath:   mockFilePath,
+			DeclearedInterfaces: d,
 		}
+		mockMap[srcPath] = mf
+
+		/*
+			dname := filepath.Dir(path)
+			bname := filepath.Base(path)
+			testFileName := createTestFileName(bname)
+
+			output := fmt.Sprintf("%s/%s", dname, testFileName)
+			var mockPkgPath string
+			outputASTFile := g.newTestCodeASTFile(testPackageName, abs, mockPkgPath)
+			outputASTFile.Decls = append(outputASTFile.Decls, outputDecls...)
+			if len(outputDecls) == 0 {
+				continue
+			}
+
+			if _, err := os.Stat(output); os.IsNotExist(err) {
+				file, err := os.Create(output)
+				if err != nil {
+					return err
+				}
+				err = format.Node(file, token.NewFileSet(), outputASTFile)
+				if err != nil {
+					return err
+				}
+			}
+		*/
+	}
+
+	for path, fset := range fsets {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+
+		mockMap.IsReferedFrom(fset, abs)
 	}
 
 	return nil
