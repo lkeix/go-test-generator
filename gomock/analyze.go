@@ -86,11 +86,6 @@ func NewMockMap() MockMap {
 	return make(MockMap)
 }
 
-func (m MockMap) IsReferedFrom(fset *ast.File, path string) bool {
-
-	return false
-}
-
 func ExtractDeclearedInterfaces(decls []ast.Decl) []*Interface {
 	is := make([]*Interface, 0)
 	for _, decl := range decls {
@@ -149,6 +144,8 @@ type Gomock interface {
 	ExtractGoMockComment(filepath string) (GomockComment, error)
 	ExtractMockPkgPath(path string) map[string]*packages.Package
 	IsImportedMockPkg(filePath string, mockPkg string) bool
+	IsReferedFrom(m MockMap, fset *ast.File, path string) bool
+	AST() map[string]*ast.File
 }
 
 type FilePath string
@@ -160,6 +157,84 @@ type gomock struct {
 	pkgs               []*packages.Package
 	funcDecls          map[FilePath]map[FuncName]*ast.FuncDecl
 	asts               map[string]*ast.File
+	module             string
+}
+
+type InterfaceDepsDirection struct {
+	Caller   *ast.FuncDecl
+	CallFunc *types.Interface
+}
+
+func (g *gomock) IsReferedFrom(m MockMap, fset *ast.File, path string) bool {
+	decls := fset.Decls
+	for _, d := range decls {
+		f, ok := d.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+
+		for _, stmt := range f.Body.List {
+			switch s := stmt.(type) {
+			case *ast.AssignStmt:
+				for _, expr := range s.Rhs {
+					if callExpr, ok := expr.(*ast.CallExpr); ok {
+						funcObj := g.extractReference(g.pkgs, callExpr)
+						if funcObj == nil {
+							continue
+						}
+
+						recv := extractReciver(funcObj)
+						if recv == nil {
+							continue
+						}
+
+						if _, ok := recv.Type().Underlying().(*types.Interface); ok {
+							return true
+						}
+					}
+				}
+			case *ast.ExprStmt:
+				callExpr, ok := s.X.(*ast.CallExpr)
+				if ok {
+					funcObj := g.extractReference(g.pkgs, callExpr)
+					if funcObj == nil {
+						continue
+					}
+
+					recv := extractReciver(funcObj)
+					if recv == nil {
+						continue
+					}
+
+					if _, ok := recv.Type().Underlying().(*types.Interface); ok {
+						return true
+					}
+				}
+			case *ast.IfStmt:
+				if assignStmt, ok := s.Init.(*ast.AssignStmt); ok {
+					for _, expr := range assignStmt.Rhs {
+						if callExpr, ok := expr.(*ast.CallExpr); ok {
+							funcObj := g.extractReference(g.pkgs, callExpr)
+							if funcObj == nil {
+								continue
+							}
+
+							recv := extractReciver(funcObj)
+							if recv == nil {
+								continue
+							}
+							fmt.Println(funcObj.Name())
+
+							if _, ok := recv.Type().Underlying().(*types.Interface); ok {
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (g *gomock) ExtractGoMockComment(filepath string) (GomockComment, error) {
@@ -251,7 +326,7 @@ func (g *gomock) extractCallExprInInterface(pkg *packages.Package, bs *ast.Block
 		case *ast.AssignStmt:
 			for _, expr := range s.Rhs {
 				if callExpr, ok := expr.(*ast.CallExpr); ok {
-					funcObj := extractReference(pkg, callExpr)
+					funcObj := g.extractReference(g.pkgs, callExpr)
 					if funcObj == nil {
 						continue
 					}
@@ -270,7 +345,7 @@ func (g *gomock) extractCallExprInInterface(pkg *packages.Package, bs *ast.Block
 		case *ast.ExprStmt:
 			callExpr, ok := s.X.(*ast.CallExpr)
 			if ok {
-				funcObj := extractReference(pkg, callExpr)
+				funcObj := g.extractReference(g.pkgs, callExpr)
 				if funcObj == nil {
 					continue
 				}
@@ -288,7 +363,7 @@ func (g *gomock) extractCallExprInInterface(pkg *packages.Package, bs *ast.Block
 			if assignStmt, ok := s.Init.(*ast.AssignStmt); ok {
 				for _, expr := range assignStmt.Rhs {
 					if callExpr, ok := expr.(*ast.CallExpr); ok {
-						funcObj := extractReference(pkg, callExpr)
+						funcObj := g.extractReference(g.pkgs, callExpr)
 						if funcObj == nil {
 							continue
 						}
@@ -309,12 +384,45 @@ func (g *gomock) extractCallExprInInterface(pkg *packages.Package, bs *ast.Block
 	return nil
 }
 
-func extractReference(pkg *packages.Package, callExpr *ast.CallExpr) types.Object {
-	switch f := callExpr.Fun.(type) {
-	case *ast.Ident:
-		return pkg.TypesInfo.ObjectOf(f)
-	case *ast.SelectorExpr:
-		return pkg.TypesInfo.ObjectOf(f.Sel)
+func (g *gomock) AST() map[string]*ast.File {
+	res := make(map[string]*ast.File)
+	for _, pkg := range g.pkgs {
+		for i, file := range pkg.GoFiles {
+			res[file] = pkg.Syntax[i]
+		}
+	}
+	return res
+}
+
+func (gm *gomock) extractReference(pkgs []*packages.Package, callExpr *ast.CallExpr) types.Object {
+	for _, pkg := range pkgs {
+		if gm.module != "" && strings.HasPrefix(pkg.String(), gm.module) {
+			switch f := callExpr.Fun.(type) {
+			case *ast.Ident:
+				if res := pkg.TypesInfo.ObjectOf(f); res != nil {
+					if gm.module == "" {
+						return res
+					}
+					if res.Pkg() != nil {
+						if gm.module != "" && strings.Contains(res.Pkg().String(), gm.module) {
+							return res
+						}
+					}
+				}
+			case *ast.SelectorExpr:
+				if res := pkg.TypesInfo.ObjectOf(f.Sel); res != nil {
+					if gm.module == "" {
+						return res
+					}
+
+					if res.Pkg() != nil {
+						if gm.module != "" && strings.Contains(res.Pkg().String(), gm.module) {
+							return res
+						}
+					}
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -328,7 +436,7 @@ func extractReciver(funcObj types.Object) *types.Var {
 	return nil
 }
 
-func NewGomock(rootDir string, asts map[string]*ast.File) (Gomock, error) {
+func NewGomock(rootDir string, asts map[string]*ast.File, module string) (Gomock, error) {
 	funcDecls := make(map[FilePath]map[FuncName]*ast.FuncDecl)
 	for path, ast := range asts {
 		fp := FilePath(path)
@@ -356,6 +464,7 @@ func NewGomock(rootDir string, asts map[string]*ast.File) (Gomock, error) {
 		pkgs:      pkgs,
 		asts:      asts,
 		funcDecls: funcDecls,
+		module:    module,
 	}, nil
 }
 

@@ -22,7 +22,12 @@ func NewCLI() *cobra.Command {
 				log.Fatal(err)
 			}
 
-			generator, err := gotestgenerator.NewGenerator(path, enableGoMock)
+			module, err := cmd.Flags().GetString("module")
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			generator, err := gotestgenerator.NewGenerator(path, enableGoMock, module)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -33,8 +38,9 @@ func NewCLI() *cobra.Command {
 		},
 	}
 
-	var path string
+	var path, mod string
 	c.Flags().StringVar(&path, "path", "", "specify gererate go test path")
+	c.Flags().StringVar(&mod, "module", "", "specify module in go.mod to create internal mock")
 
 	var enableGomock bool
 	c.Flags().BoolVar(&enableGomock, "enable-go-mock", false, "specify enable go mock")

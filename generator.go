@@ -21,14 +21,14 @@ type Generator struct {
 	gm           gomock.Gomock
 }
 
-func NewGenerator(path string, enableGoMock bool) (*Generator, error) {
+func NewGenerator(path string, enableGoMock bool, module string) (*Generator, error) {
 	astLoader := estimatenecessarytests.NewASTLoader(path, false)
 	err := astLoader.Load(parser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
 
-	gm, err := gomock.NewGomock(path, astLoader.Asts)
+	gm, err := gomock.NewGomock(path, astLoader.Asts, module)
 	if err != nil {
 		return nil, err
 	}
@@ -44,10 +44,14 @@ func (g *Generator) Generate() error {
 	funcsMap := make(map[string]map[string]int64)
 	fsets := make(map[string]*ast.File)
 	for k, ast := range g.astLoader.Asts {
+		abs, err := filepath.Abs(k)
+		if err != nil {
+			return err
+		}
 		calculator := estimatenecessarytests.NewCalculator()
 		calculator.Calculate(ast)
 		funcsMap[k] = calculator.Result
-		fsets[k] = ast
+		fsets[abs] = g.gm.AST()[abs]
 	}
 
 	mockMap := gomock.NewMockMap()
@@ -85,7 +89,7 @@ func (g *Generator) Generate() error {
 		srcPath := mockComment.ExtractMockSrcPath()
 		mockFilePath := mockComment.ExtractGeneratedMockPath()
 
-		f := fsets[path]
+		f := fsets[abs]
 		d := gomock.ExtractDeclearedInterfaces(f.Decls)
 		if len(d) == 0 {
 			continue
@@ -129,7 +133,9 @@ func (g *Generator) Generate() error {
 			return err
 		}
 
-		mockMap.IsReferedFrom(fset, abs)
+		fmt.Println(path)
+		ok := g.gm.IsReferedFrom(mockMap, fset, abs)
+		fmt.Println(ok)
 	}
 
 	return nil
