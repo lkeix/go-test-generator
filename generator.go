@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/format"
+	"go/parser"
 	"go/token"
 	"log"
 	"os"
@@ -21,7 +22,7 @@ type Generator struct {
 
 func NewGenerator(path string) (*Generator, error) {
 	astLoader := estimatenecessarytests.NewASTLoader(path, false)
-	err := astLoader.Load()
+	err := astLoader.Load(parser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
