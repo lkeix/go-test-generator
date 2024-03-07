@@ -136,8 +136,6 @@ func BuildTestCase(packageName string, funcs map[string]int64) *ast.File {
 func buildTestFuncDecls(funcs map[string]int64) []ast.Decl {
 	decls := []ast.Decl{}
 	for testFuncName, needTestCases := range funcs {
-		fmt.Println(testFuncName)
-		fmt.Println(needTestCases)
 		decls = append(decls, &ast.FuncDecl{
 			Name: ast.NewIdent(testFuncName),
 			Type: &ast.FuncType{
